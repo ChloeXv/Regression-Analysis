@@ -1,0 +1,291 @@
+---
+title: "实际数据分析"
+author: "叶冷竹"
+date: "2021/12/30"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 包的调用与数据导入
+```{r}
+library(mlbench) # 调用"mlbench"包
+library(car) # 调用car包
+library(MASS) # 调用“MASS”包
+library(corpcor) # 调用“corpcor”包
+library(corrplot) # 调用“corrplot”包
+library(lars) # 调用lars包
+data("BostonHousing") # 载入"BostonHousing"数据
+```
+
+
+# 描述性统计
+
+## 均值、中位数、极值与四分位点
+```{r}
+data = BostonHousing[,-c(4)] # 删除“chas”变量
+summary(data) # 计算各变量基本统计量
+```
+
+## 绘制直方图
+```{r}
+x = data[,c(1:12)] # 将自变量数据赋值给x
+y = data[,c(13)] # 将因变量数据赋值给y
+
+title = c("CRIM","ZN","INDUS","NOX","RM","AGE","DIS",
+          "RAD","TAX","PRTATIO","B","LSTAT") # 提取自变量名称
+
+par(mfrow=c(1,1)) # 设置绘图布局
+par(mar = c(3,3,1,1)) # 设置绘图边距
+hist(y,main='Histogram of medv')# 绘制因变量直方图
+
+par(mfrow=c(4,3)) # 设置绘图布局
+for(i in 1:12){
+  hist(x[,i], xlab = paste0(title[i]),main=paste('Histogram of',title[i]))
+} # 绘制各自变量直方图
+```
+
+## 绘制散点图
+```{r}
+par(mfrow=c(4,3)) # 设置绘图布局
+par(mar = c(3,3,1,1)) # 设置绘图边距
+for(i in 1:12){
+  plot(x[,i], y, xlab = paste0(title[i]),ylab = "medv")
+} # 绘制因变量与各自变量的一维散点图
+```
+
+## 绘制相关系数矩阵
+```{r}
+mycor <- cor(data) # 计算数据相关系数
+par(mfrow=c(1,1)) # 设置绘图布局
+corrplot.mixed(mycor, upper = "ellipse") # 绘制相关系数矩阵图
+```
+
+
+# 基础模型构建
+```{r}
+data.1 = data.frame(scale(data)) # 对数据进行标准化
+
+fit.1 = lm(medv~.-1,data=data.1) # 拟合线性模型
+summary(fit.1) # 输出拟合结果
+```
+
+从上面基础模型的输出结果可以看出，存在不显著的自变量，故选择先进行变量选择
+
+# 变量选择
+```{r}
+vif(fit.1) # 检验多重共线性
+```
+
+部分变量VIF值接近10，说明存在一定的多重共线性
+
+## 岭回归
+```{r}
+fit.ridge = lm.ridge(medv~.-1,data=data.1,lambda=seq(0,2,0.1)) # 岭回归
+beta = coef(fit.ridge) # 将所有不同岭参数对应的回归系数赋给beta
+# 绘制岭迹图
+k = fit.ridge$lambda # 将所有岭参数赋给k
+plot(k,k,type='n',xlab='岭参数',ylab='岭回归系数',
+     ylim=c(-0.5,0.7)) # 创建没有任何点和线的图形区域
+linetype = c(1:12)
+char = c(11:22)
+for(i in 1:12){
+  lines(k,beta[,i],type='o',lty=linetype[i],pch=char[i],cex=0.75)
+} # 画岭迹线
+legend('topright',legend=title,cex=0.6,lty=linetype,pch=char,ncol=3) # 添加图例
+```
+
+上述岭迹图显示各自变量岭回归系数稳定，故不易通过岭回归直接筛选变量
+
+## 逐步回归法
+```{r}
+fit.2 = step(fit.1,direction="both") # 逐步回归法筛选自变量
+```
+
+从最终输出结果可以看到，逐步回归建议删除“indus”和“age”两个变量，
+此时模型的AIC值达到最小
+
+## Lasso回归
+```{r}
+fit.lar = lars(as.matrix(x),as.matrix(y),type="lasso") # Lasso回归
+summary(fit.lar) # 输出cp值
+fit.lar # 查看应删除变量
+```
+
+结合上述输出结果可以发现，Lasso回归在第十步时模型Cp值最小，
+而第十一和十二步的变量分别为“indus”和“age”，故同样建议删除这两个变量
+
+## 构建删除“indus”和“age”后的新模型
+```{r}
+data.2 = data.1[,-c(3,6)] # 删除“indus”和“age”两个自变量
+fit.2 = lm(medv~.-1,data=data.2) # 拟合新的线性模型
+summary(fit.2) # 输出新的拟合结果
+par(mfrow=c(2,2)) # 设置绘图布局
+plot(fit.2) # 绘制回归诊断结果图
+```
+
+上述输出结果显示，删除两个不显著变量后，R方和调整后R方均变化不大，
+但F值有较明显的提升，说明整体模型更加显著
+不过，诊断图显示模型残差尚不符合正态性假设且存在异方差性，
+亦可能存在异常值点，故考虑进一步优化数据和模型
+
+# 异常值处理
+```{r}
+par(mfrow = c(1,1)) # 设置绘图模式
+influencePlot(fit.2) # 呈现异常值点
+data.3.1 = data.2[-c(366,369,373,381,419),] # 删除筛选出的异常值点
+fit.3.1 = lm(medv~.-1,data=data.3.1) # 拟合新的线性模型
+
+# 重复上述操作
+influencePlot(fit.3.1) # 呈现异常值点
+data.3.2 = data.3.1[-c(368,370,372,406,411,413),] # 删除筛选出的异常值点
+fit.3.2 = lm(medv~.-1,data=data.3.2) # 拟合新的线性模型
+
+# 再次重复上述操作
+influencePlot(fit.3.2) # 呈现异常值点
+data.3.3 = data.3.2[-c(368,371,406,411,413),] # 删除筛选出的异常值点
+fit.3.3 = lm(medv~.-1,data=data.3.3) # 拟合新的线性模型
+
+# 再次重复上述操作
+influencePlot(fit.3.3) # 呈现异常值点
+data.3.4 = data.3.3[-c(368,406,411,413),] # 删除筛选出的异常值点
+fit.3.4 = lm(medv~.-1,data=data.3.4) # 拟合新的线性模型
+
+influencePlot(fit.3.4) # 呈现异常值点
+fit.3 = fit.3.4
+summary(fit.3)
+par(mfrow = c(2,2)) # 设置绘图模式
+plot(fit.3)
+
+shapiro.test(resid(fit.3)) # 检验残差正态性
+```
+
+多次重复操作后发现仍然存在异常值，虽然R方和F值有较显著提升，
+但不符合正态性和异方差等问题仍然没有得到解决。
+这很可能因为普通最小二乘并不适合该数据集，
+故接下来采用多元加权最小二乘和Box-Cox变化处理异方差性
+
+# 异方差性处理
+
+## 多元加权最小二乘
+```{r}
+#Spearman相关系数的计算
+data.3 = data.3.4
+e2 = resid(fit.3) #计算新回归中残差
+spearman_result = list() #新建一个列表用于储存检验结果
+cor.spearman = vector() #新建一个向量，用于储存每个检验的p值
+abse2 = abs(e2) #取残差的绝对值
+for(i in 1:10){
+  spearman_result[[i]] = cor.test(data.3[,i],abse2,method = "spearman") 
+  cor.spearman[i] = cor.test(data.3[,i],abse2,method = "spearman")$p.value
+} #使用Spearman相关系数对自变量和残差绝对值之间相关性进行检验
+spearman_result #输出Spearman相关系数计算结果
+cor.spearman #输出对每个自变量进行Spearman检验的p值
+names(data.3)[cor.spearman<0.05]#输出小于0.5的变量名
+which.min(cor.spearman)#第四个自变量"rm"的p值最小，即等级相关系数最大
+
+#多元加权最小二乘
+#剔除原始数据中的"chas""age""indus"并按之前的顺序删除异常值点，得到未标准化的数据data.4
+data.4.1 = BostonHousing[-c(366,369,373,381,419),-c(3,4,7)]
+data.4.2 = data.4.1[-c(368,370,372,406,411,413),]
+data.4.3 = data.4.2[-c(368,371,406,411,413),]
+data.4 = data.4.3[-c(368,406,411,413),]
+
+s = seq(-2,2,0.5) #产生数列:-2,-1.5,-1,...,1.5,2
+logLik.list1 = list() #新建一个列表，储存不同权函数下的对数似然函数值
+result.w.list1 = list() #新建一个列表，储存不同权函数下的回归模型结果
+for(i in 1 : length(s)){
+  w = data.4[,4] ^ (-s[i]) #计算不同权函数下的权重值
+  result.w = lm(medv ~ . ,weights = w,data.3) #用加权最小二乘拟合线性模型
+  logLik.list1[[i]] = logLik(result.w) #储存对数似然函数值
+  result.w.list1[[i]] = summary(result.w) #储存回归模型结果
+}
+logLik.list1 #输出不同权函数下的对数似然函数值
+m = 0.5*which.max(logLik.list1)-2.5 #计算最优权函数中的参数m
+m #输出参数m，发现为2
+result.w.list1[which.max(logLik.list1)] #输出对应对数函数最大值的模型
+
+#改变参数范围
+s = seq(2, 5, 0.5) # 产生数列:2,2.5,3,...,5
+logLik.list2 = list() # 新建一个列表，用于储存不同权函数下的对数似然函数值
+result.w.list2 = list() # 新建一个列表，用于储存不同权函数下的回归模型结果
+for(i in 1 : length(s)){
+  w = data.4[,4] ^ (-s[i]) # 计算不同权函数下的权重值
+  result.w = lm(medv ~ . ,weights = w,data.3) # 用加权最小二乘拟合线性模型
+  logLik.list2[[i]] = logLik(result.w) # 储存对数似然函数值
+  result.w.list2[[i]] = summary(result.w) # 储存回归模型结果
+}
+logLik.list2 # 输出不同权函数下的对数似然函数值
+m = 0.5*which.max(logLik.list2) + 1.5 # 计算最优权函数中的参数m
+m # 输出m，发现为3.5
+result.w.list2[which.max(logLik.list2)] # 输出对应对数函数最大值的模型
+
+# 绘制加权最小二乘诊断图
+fit.w = lm(medv~.,weights=data.4[,4]^(-m),data.3) # 将加权最小二乘结果储存在fit.w中
+par(mfrow = c(2,2)) # 设置绘图布局
+plot(fit.w) # 绘制模型诊断图
+```
+
+从上述输出结果可以看到，经过加权最小二乘处理后，
+虽然异方差性得到一定改善，但正态性假设仍不满足，
+且R方反而下降至0.7692，说明拟合效果反而更差，
+故不选择采用该加权最小二乘模型
+
+
+## Box-Cox变换
+```{r}
+# 使响应变量medv为正
+# 按先前顺序删除异常值点，提取原因变量medv
+medv.1 = BostonHousing[-c(366,369,373,381,419),c('medv')]
+medv.2 = medv.1[-c(368,370,372,406,411,413)]
+medv.3 = medv.2[-c(368,371,406,411,413)]
+medv = medv.3[-c(368,406,411,413)]
+data.5 = cbind(data.3[,c(1:10)],medv) # 合并原因变量medv
+
+bc.boston = boxcox(medv~., data=data.5, lambda=seq(-2, 2, 0.01))
+#计算不同lambda值对应BoxCox变换的似然函数
+#lambda取值区间为[-2, 2]，步长为0.01
+lambda = bc.boston$x[which.max(bc.boston$y)] # 选取使似然函数达到最大值的lambda值
+lambda # 输出lambda，发现为0.28
+medv_bc = (data.5$medv ^ lambda - 1) / lambda # 计算变换后的medv值，记为medv_bc
+fit.3_bc = lm(medv_bc~.-medv,data=data.5) # 以medv_bc为因变量拟合线性模型
+summary(fit.3_bc) 
+
+par(mfrow = c(2,2)) # 设置绘图布局
+plot(fit.3_bc) # 绘制模型诊断图
+```
+
+从上述输出结果可以看到，异方差性和正态性都得到一定改善，
+且R方上升至0.8274，故我选择采用Box-Cox变换后的模型
+
+
+但是上述模型在异方差性等方面仍不完美，联想到最初的散点图，
+可以发现，因变量medv与自变量rm、lstat之间可能分别存在
+二次项关系和倒数关系，故考虑将这两项纳入模型中
+
+# 其他改进方向
+```{r}
+fit.4 = lm(medv~.+I(rm^2)+I(1/lstat),data = data.3)
+# 加入rm^2和1/lstat两项后重新拟合模型
+summary(fit.4) # 输出拟合结果
+par(mfrow = c(2,2)) #设置绘图模式
+plot(fit.4) # 绘制诊断图
+
+# 从四个诊断图中都发现，第365次观测是一个明显的异常值点，故选择删除
+
+fit.5 = lm(medv~.+I(rm^2)+I(1/lstat),data = data.3[-c(365),]) # 删除第365次观测
+summary(fit.5) # 输出拟合结果
+par(mfrow = c(2,2)) #设置绘图模式
+plot(fit.5) # 绘制诊断图
+```
+
+从上述输出结果可以发现，正态性和异方差性得到进一步改善，
+R方更是提升到了0.8819，故可选择该模型为最终模型。
+当然，仍然可以采用Box-Cox变换等方式对上述模型做进一步处理，
+但此处就不再加以赘述
+
